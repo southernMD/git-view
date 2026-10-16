@@ -13,7 +13,9 @@ import {
   AlertCircle,
   Download,
   GitMerge,
-  Edit3
+  Edit3,
+  Pin,
+  ArrowRightLeft
 } from 'lucide-vue-next'
 import type { RepoDetails } from '../api'
 import {
@@ -23,7 +25,8 @@ import {
   deleteBranch,
   fetchRepoDetails,
   pullRemoteBranch,
-  renameBranchApi
+  renameBranchApi,
+  deleteRemoteBranchApi
 } from '../api'
 import {
   buildBranchTree,
@@ -35,6 +38,7 @@ import {
 import BranchFolderCard from './BranchFolderCard.vue'
 import BranchItemCard from './BranchItemCard.vue'
 import BatchMergeModal from './BatchMergeModal.vue'
+import SearchableSelect from './SearchableSelect.vue'
 
 const props = defineProps<{
   repo: RepoDetails
@@ -43,6 +47,7 @@ const props = defineProps<{
   isSelectMode?: boolean
   selectedBranches?: string[]
   quickTargetBranch?: string
+  pinnedBranchNames?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -53,6 +58,7 @@ const emit = defineEmits<{
   (e: 'update:quickTargetBranch', target: string): void
   (e: 'quickMerge', branchName: string): void
   (e: 'selectBranch', branch: BranchItem): void
+  (e: 'togglePin', branch: BranchItem): void
   (e: 'toast', msg: string, type: 'success' | 'error' | 'info'): void
   (e: 'repoUpdated', updated: RepoDetails): void
   (e: 'openCreateBranch', folderPath?: string): void
@@ -242,6 +248,38 @@ const branchItems = computed<BranchItem[]>(() => {
   }))
 })
 
+// Header Target Branch Options for SearchableSelect
+const headerTargetBranchOptions = computed(() => {
+  return branchItems.value.map((b) => ({
+    value: b.fullName,
+    label: b.fullName,
+    badge: b.fullName === props.repo.currentBranch ? '当前' : undefined
+  }))
+})
+
+// Pull Remote Host Options for SearchableSelect
+const pullRemoteOptions = computed(() => {
+  if (!props.repo.remotes || props.repo.remotes.length === 0) {
+    return [{ value: 'origin', label: 'origin' }]
+  }
+  return props.repo.remotes.map((r) => ({
+    value: r.name,
+    label: `${r.name} (${r.url})`
+  }))
+})
+
+// Pinned Branches for Workspace (始终在根目录的最顶上，按按下时间从上到下)
+const workspacePinnedBranches = computed<BranchItem[]>(() => {
+  if (!props.pinnedBranchNames || props.pinnedBranchNames.length === 0) return []
+  const branchMap = new Map<string, BranchItem>()
+  for (const b of branchItems.value) {
+    branchMap.set(b.fullName, b)
+  }
+  return props.pinnedBranchNames
+    .map((name) => branchMap.get(name))
+    .filter((b): b is BranchItem => Boolean(b))
+})
+
 // Build Branch Tree with repo.name as root name (no "根目录")
 const branchTree = computed<BranchFolderNode>(() => {
   return buildBranchTree(branchItems.value, props.repo.name)
@@ -394,16 +432,17 @@ async function handleDirectPush(branchName: string, force = false) {
     const errMsg = err.message || ''
     // Check if it's non-fast-forward rejected (fetch first / Updates were rejected)
     if (errMsg.includes('fetch first') || errMsg.includes('non-fast-forward') || errMsg.includes('Updates were rejected')) {
-      if (confirm(`推送被拒绝：远程分支 "${remote}/${branchName}" 存在您本地尚未拉取的更新。\n\n是否立即为您自动拉取远程更新并重新推送？`)) {
+      if (confirm(`推送被拒绝：远程分支 "${remote}/${branchName}" 存在您本地尚未拉取的更新。\n\n是否立即为您拉取远程更新并合并后重新推送？（本地所有合并和提交都会被完整保留）`)) {
         try {
           emit('toast', `正在拉取远程更新并重新推送...`, 'info')
-          // Pull remote
+          // Pull remote (safe merge pull, forceReset is false to preserve local commits)
           await pullRemoteBranch({
             fullPath: props.repo.fullPath,
             remote,
             remoteBranch: branchName,
             localBranch: branchName,
             overwrite: true,
+            forceReset: false,
             checkoutImmediately: false
           })
           // Retry push
@@ -540,6 +579,43 @@ async function handleDeleteBranch(branch: BranchItem) {
   }
 }
 
+// Delete remote branch (git push <remote> --delete <branch>)
+async function handleDeleteRemoteBranch(branch: BranchItem) {
+  let remote = props.repo.remotes[0]?.name || 'origin'
+  let remoteBranchName = branch.fullName
+
+  if (branch.upstream) {
+    const slashIdx = branch.upstream.indexOf('/')
+    if (slashIdx !== -1) {
+      remote = branch.upstream.slice(0, slashIdx)
+      remoteBranchName = branch.upstream.slice(slashIdx + 1)
+    }
+  }
+
+  if (!confirm(`⚠️ 危险操作确认：\n\n确定要从远程仓库 "${remote}" 永久删除分支 "${remoteBranchName}" 吗？\n\n（注意：此操作将从远程服务器上彻底删除该分支，但您的本地代码分支仍会保留）`)) {
+    return
+  }
+
+  loadingAction.value = `delete-remote-${branch.fullName}`
+  emit('toast', `正在删除远程分支 "${remote}/${remoteBranchName}"...`, 'info')
+
+  try {
+    const res = await deleteRemoteBranchApi({
+      fullPath: props.repo.fullPath,
+      remote,
+      branch: remoteBranchName
+    })
+
+    emit('toast', res.message || `已成功删除远程分支 "${remote}/${remoteBranchName}"！`, 'success')
+    const updated = await fetchRepoDetails(props.repo.fullPath, true)
+    emit('repoUpdated', updated)
+  } catch (err: any) {
+    emit('toast', `删除远程分支失败: ${err.message}`, 'error')
+  } finally {
+    loadingAction.value = null
+  }
+}
+
 // Pull single branch from remote (每行对应的就是拉取自己)
 async function handlePullBranch(branch: BranchItem) {
   let remote = props.repo.remotes[0]?.name || 'origin'
@@ -567,6 +643,7 @@ async function handlePullBranch(branch: BranchItem) {
       remoteBranch: remoteBranchName,
       localBranch: branch.fullName,
       overwrite: true,
+      forceReset: false,
       checkoutImmediately: false
     })
 
@@ -609,15 +686,24 @@ async function handlePullBranch(branch: BranchItem) {
             <GitMerge :size="13" style="color: #818cf8;" />
             <span>合并目标:</span>
           </div>
-          <select 
-            :value="quickTargetBranch" 
-            class="header-target-branch-select"
-            @change="emit('update:quickTargetBranch', ($event.target as HTMLSelectElement).value)"
+          <SearchableSelect
+            :model-value="quickTargetBranch"
+            :options="headerTargetBranchOptions"
+            variant="header"
+            placeholder="选择目标分支..."
+            search-placeholder="搜索目标分支..."
+            @update:model-value="(val) => emit('update:quickTargetBranch', val)"
+          />
+
+          <button
+            v-if="quickTargetBranch && repo.currentBranch !== quickTargetBranch"
+            class="header-target-switch-btn"
+            :title="`切换到目标分支 (${quickTargetBranch})`"
+            @click="handleCheckout({ fullName: quickTargetBranch } as any)"
           >
-            <option v-for="b in branchItems" :key="b.fullName" :value="b.fullName">
-              {{ b.fullName }} {{ b.fullName === repo.currentBranch ? '(当前)' : '' }}
-            </option>
-          </select>
+            <ArrowRightLeft :size="12" />
+            <span>切至目标</span>
+          </button>
         </div>
 
         <button class="btn btn-secondary btn-sm" :disabled="!!loadingAction" @click="handleFetch">
@@ -766,6 +852,8 @@ async function handlePullBranch(branch: BranchItem) {
             :is-select-mode="isSelectMode"
             :is-merge-selected="selectedBranches?.includes(b.fullName)"
             :quick-target-branch="quickTargetBranch"
+            :is-pinned="pinnedBranchNames?.includes(b.fullName)"
+            @toggle-pin="(branch) => emit('togglePin', branch)"
             @toggle-expand="handleToggleBranchCard"
             @toggle-merge-select="(branch) => toggleBranchSelect(branch.fullName)"
             @quick-merge="(branch) => emit('quickMerge', branch.fullName)"
@@ -775,6 +863,7 @@ async function handlePullBranch(branch: BranchItem) {
             @push="(branch) => handleDirectPush(branch.fullName)"
             @rename="openRenameModal"
             @delete="handleDeleteBranch"
+            @delete-remote="handleDeleteRemoteBranch"
             @toast="(msg, type) => emit('toast', msg, type)"
           />
         </div>
@@ -797,6 +886,41 @@ async function handlePullBranch(branch: BranchItem) {
               {{ currentFolderNode.subfolders.length }} 文件夹 / {{ currentFolderNode.branches.length }} 分支
             </span>
           </h2>
+        </div>
+
+        <!-- Pinned Branches at Workspace Root (始终在根目录的最顶上，按按下时间从上到下) -->
+        <div v-if="!currentFolderPath && workspacePinnedBranches.length > 0" class="workspace-pinned-section">
+          <div class="workspace-pinned-header">
+            <Pin :size="15" style="color: #f59e0b;" />
+            <span class="workspace-pinned-title">置顶分支 ({{ workspacePinnedBranches.length }})</span>
+            <span class="workspace-pinned-desc">始终显示在根目录最顶上，按按下时间从上到下排列</span>
+          </div>
+          <div class="branch-items-list" style="margin-bottom: 24px;">
+            <BranchItemCard 
+              v-for="b in workspacePinnedBranches" 
+              :key="'ws-pinned-' + b.fullName"
+              :branch="b"
+              :repo-full-path="repo.fullPath"
+              :loading-action="loadingAction"
+              :is-selected="activeBranchName === b.fullName"
+              :is-expanded="expandedBranchName === b.fullName"
+              :is-select-mode="isSelectMode"
+              :is-merge-selected="selectedBranches?.includes(b.fullName)"
+              :quick-target-branch="quickTargetBranch"
+              :is-pinned="true"
+              @toggle-pin="(branch) => emit('togglePin', branch)"
+              @toggle-expand="handleToggleBranchCard"
+              @toggle-merge-select="(branch) => toggleBranchSelect(branch.fullName)"
+              @quick-merge="(branch) => emit('quickMerge', branch.fullName)"
+              @checkout="handleCheckout"
+              @pull="handlePullBranch"
+              @push="(branch) => handleDirectPush(branch.fullName)"
+              @rename="openRenameModal"
+              @delete="handleDeleteBranch"
+              @delete-remote="handleDeleteRemoteBranch"
+              @toast="(msg, type) => emit('toast', msg, type)"
+            />
+          </div>
         </div>
 
         <!-- A. Subfolders Grid -->
@@ -828,6 +952,8 @@ async function handlePullBranch(branch: BranchItem) {
               :is-select-mode="isSelectMode"
               :is-merge-selected="selectedBranches?.includes(b.fullName)"
               :quick-target-branch="quickTargetBranch"
+              :is-pinned="pinnedBranchNames?.includes(b.fullName)"
+              @toggle-pin="(branch) => emit('togglePin', branch)"
               @toggle-expand="handleToggleBranchCard"
               @toggle-merge-select="(branch) => toggleBranchSelect(branch.fullName)"
               @quick-merge="(branch) => emit('quickMerge', branch.fullName)"
@@ -836,6 +962,7 @@ async function handlePullBranch(branch: BranchItem) {
               @push="(branch) => handleDirectPush(branch.fullName)"
               @rename="openRenameModal"
               @delete="handleDeleteBranch"
+              @delete-remote="handleDeleteRemoteBranch"
               @toast="(msg, type) => emit('toast', msg, type)"
             />
           </div>
@@ -873,12 +1000,12 @@ async function handlePullBranch(branch: BranchItem) {
           <!-- Remote Host Select -->
           <div class="form-group">
             <label class="form-label">远程主机 (Remote)</label>
-            <select v-model="pullRemoteName" class="form-select">
-              <option v-for="r in repo.remotes" :key="r.name" :value="r.name">
-                {{ r.name }} ({{ r.url }})
-              </option>
-              <option v-if="repo.remotes.length === 0" value="origin">origin</option>
-            </select>
+            <SearchableSelect
+              v-model="pullRemoteName"
+              :options="pullRemoteOptions"
+              placeholder="选择远程主机..."
+              search-placeholder="搜索远程主机..."
+            />
           </div>
 
           <!-- Remote Branch Name Input -->
@@ -1623,5 +1750,53 @@ async function handlePullBranch(branch: BranchItem) {
 .header-target-branch-select option {
   background: #0f172a;
   color: #f8fafc;
+}
+
+.header-target-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(99, 102, 241, 0.2);
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  color: #c7d2fe;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.header-target-switch-btn:hover {
+  background: rgba(99, 102, 241, 0.4);
+  border-color: #818cf8;
+  color: #ffffff;
+}
+
+.workspace-pinned-section {
+  margin-bottom: 24px;
+  background: rgba(245, 158, 11, 0.03);
+  border: 1px dashed rgba(245, 158, 11, 0.25);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.workspace-pinned-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.workspace-pinned-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #fbbf24;
+}
+
+.workspace-pinned-desc {
+  font-size: 0.75rem;
+  color: var(--text-sub);
 }
 </style>

@@ -215,12 +215,28 @@ export async function deleteBranch(fullPath: string, branch: string, force: bool
   return data.output || data.message
 }
 
+export async function deleteRemoteBranchApi(params: {
+  fullPath: string
+  branch: string
+  remote?: string
+}): Promise<{ success: boolean; message: string; output: string }> {
+  const res = await fetch('/api/git/delete-remote-branch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  })
+  const data = await res.json()
+  if (!data.success) throw new Error(data.error || '删除远程分支失败')
+  return data
+}
+
 export async function pullRemoteBranch(params: {
   fullPath: string
   remote?: string
   remoteBranch: string
   localBranch?: string
   overwrite?: boolean
+  forceReset?: boolean
   checkoutImmediately?: boolean
 }): Promise<{ success: boolean; message: string; output: string; localBranch: string }> {
   const res = await fetch('/api/git/pull-remote-branch', {

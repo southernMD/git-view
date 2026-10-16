@@ -13,7 +13,8 @@ import {
   ChevronDown,
   ChevronRight,
   Search,
-  ArrowRightLeft
+  ArrowRightLeft,
+  Pin
 } from 'lucide-vue-next'
 import { fetchConfig, removeRepoPath, mergeSingleBranchApi, checkoutBranch, type RepoDetails, type ConfigResponse } from './api'
 import {
@@ -150,6 +151,22 @@ function handleUpdateQuickTargetBranch(newTarget: string) {
   }
 }
 
+async function handleCheckoutBranch(branchName: string) {
+  if (!activeRepo.value || !branchName) return
+  if (activeRepo.value.currentBranch === branchName) {
+    addToast(`当前已在分支 "${branchName}" 上`, 'info')
+    return
+  }
+  try {
+    addToast(`正在切换至分支 "${branchName}"...`, 'info')
+    await checkoutBranch(activeRepo.value.fullPath, branchName)
+    addToast(`已成功切换至分支 "${branchName}"`, 'success')
+    await loadData(true)
+  } catch (err: any) {
+    addToast(`切换失败: ${err.message}`, 'error')
+  }
+}
+
 async function handleCheckoutTargetBranch() {
   if (!activeRepo.value || !quickTargetBranch.value) return
   if (activeRepo.value.currentBranch === quickTargetBranch.value) {
@@ -252,6 +269,80 @@ const sidebarDisplayTree = computed<BranchFolderNode | null>(() => {
   )
 
   return buildBranchTree(matchingBranches, activeRepo.value.name)
+})
+
+// Pinned Branches System (置顶分支系统：始终显示在根目录最顶上，按按下时间从上到下排列)
+interface PinnedBranchRecord {
+  branchName: string
+  pinnedAt: number
+}
+
+const pinnedBranchesRecord = ref<PinnedBranchRecord[]>([])
+const pinnedSortDesc = ref<boolean>(false) // false: 按按下先后顺序（从上到下）; true: 最新按下的在最上
+
+const pinnedStorageKey = computed(() => {
+  if (!activeRepo.value) return 'gitview_pinned_branches_default'
+  return `gitview_pinned_branches_${activeRepo.value.fullPath}`
+})
+
+function loadPinnedBranches() {
+  if (typeof window === 'undefined') return
+  try {
+    const raw = localStorage.getItem(pinnedStorageKey.value)
+    if (raw) {
+      pinnedBranchesRecord.value = JSON.parse(raw)
+    } else {
+      pinnedBranchesRecord.value = []
+    }
+  } catch {
+    pinnedBranchesRecord.value = []
+  }
+}
+
+watch(pinnedStorageKey, () => {
+  loadPinnedBranches()
+}, { immediate: true })
+
+function togglePinBranch(branchName: string) {
+  const existingIndex = pinnedBranchesRecord.value.findIndex((p) => p.branchName === branchName)
+  if (existingIndex !== -1) {
+    pinnedBranchesRecord.value.splice(existingIndex, 1)
+    addToast(`已取消置顶分支: ${branchName}`, 'info')
+  } else {
+    pinnedBranchesRecord.value.push({
+      branchName,
+      pinnedAt: Date.now()
+    })
+    addToast(`已置顶分支 "${branchName}" 到根目录最顶上！`, 'success')
+  }
+  try {
+    localStorage.setItem(pinnedStorageKey.value, JSON.stringify(pinnedBranchesRecord.value))
+  } catch {}
+}
+
+const pinnedBranchNames = computed<string[]>(() => {
+  return pinnedBranchesRecord.value.map((p) => p.branchName)
+})
+
+// Sorted pinned branch items matching activeRepo branches
+const sortedPinnedBranches = computed<BranchItem[]>(() => {
+  if (!activeBranchItems.value) return []
+  const branchMap = new Map<string, BranchItem>()
+  for (const b of activeBranchItems.value) {
+    branchMap.set(b.fullName, b)
+  }
+
+  // Filter valid branches that exist in repo
+  const validRecords = pinnedBranchesRecord.value.filter((p) => branchMap.has(p.branchName))
+
+  // Sort by pinnedAt:
+  // false: 按照按下时间从上到下（先按的在最上面，后按的在下面）
+  // true: 最新按下的在最上面
+  const sortedRecords = [...validRecords].sort((a, b) => {
+    return pinnedSortDesc.value ? (b.pinnedAt - a.pinnedAt) : (a.pinnedAt - b.pinnedAt)
+  })
+
+  return sortedRecords.map((r) => branchMap.get(r.branchName)!).filter(Boolean)
 })
 
 // Toast System
@@ -504,6 +595,88 @@ onMounted(() => {
 
               <!-- Preserved hierarchical directory tree (for both normal and search states) -->
               <template v-else>
+                <!-- Pinned Branches at the VERY TOP of the root directory! (始终在根目录最顶上，按按下时间从上到下排列) -->
+                <div v-if="sortedPinnedBranches.length > 0" class="sidebar-pinned-section">
+                  <div class="sidebar-pinned-header">
+                    <div class="sidebar-pinned-title">
+                      <Pin :size="12" style="color: #f59e0b;" />
+                      <span>置顶分支 ({{ sortedPinnedBranches.length }})</span>
+                    </div>
+                    <button 
+                      class="sidebar-pinned-sort-toggle" 
+                      :title="pinnedSortDesc ? '当前排序：最新按下的在最上（点击切换为按先后顺序）' : '当前排序：按按下先后顺序从上到下（点击切换为最新在上）'"
+                      @click.stop="pinnedSortDesc = !pinnedSortDesc"
+                    >
+                      <span>{{ pinnedSortDesc ? '最新在前 ↑' : '按顺序 ↓' }}</span>
+                    </button>
+                  </div>
+
+                  <div 
+                    v-for="branch in sortedPinnedBranches" 
+                    :key="'sidebar-pinned-' + branch.fullName"
+                    class="tree-node-item branch-node-item is-pinned-branch-node"
+                    :class="{ 
+                      'is-current': branch.isCurrent, 
+                      'is-active-selected': activeBranchName === branch.fullName,
+                      'is-merge-selected': selectedBranchNames.includes(branch.fullName)
+                    }"
+                    :style="{ paddingLeft: isSelectMode ? '24px' : '28px' }"
+                    :title="`[已置顶] ${branch.fullName}`"
+                    @click="isSelectMode ? handleToggleBranchSelect(branch.fullName) : handleSelectSidebarBranch(branch)"
+                  >
+                    <input 
+                      v-if="isSelectMode"
+                      type="checkbox"
+                      class="sidebar-merge-checkbox"
+                      :checked="selectedBranchNames.includes(branch.fullName)"
+                      @click.stop="handleToggleBranchSelect(branch.fullName)"
+                    />
+                    <Pin 
+                      v-else 
+                      :size="12" 
+                      style="color: #f59e0b; flex-shrink: 0;" 
+                    />
+                    <span class="tree-node-name" :class="{ 'text-emerald': branch.isCurrent, 'text-indigo': activeBranchName === branch.fullName }">
+                      {{ branch.fullName }}
+                    </span>
+
+                    <!-- Action Buttons on hover -->
+                    <div v-if="!isSelectMode" class="sidebar-branch-actions">
+                      <!-- Pin Button (Unpin) -->
+                      <button 
+                        class="sidebar-action-btn sidebar-pin-btn is-pinned"
+                        title="取消置顶"
+                        @click.stop="togglePinBranch(branch.fullName)"
+                      >
+                        <Pin :size="11" />
+                      </button>
+
+                      <!-- Quick Merge Button on hover -->
+                      <button 
+                        v-if="quickTargetBranch && branch.fullName !== quickTargetBranch"
+                        class="sidebar-action-btn sidebar-quick-merge-btn"
+                        :title="`快速合并到 ${quickTargetBranch}`"
+                        @click.stop="handleQuickMerge(branch.fullName)"
+                      >
+                        <GitMerge :size="12" />
+                      </button>
+
+                      <!-- Switch to this branch Button on hover -->
+                      <button 
+                        v-if="!branch.isCurrent"
+                        class="sidebar-action-btn sidebar-switch-target-btn"
+                        :title="`切换至此分支 (${branch.leafName})`"
+                        @click.stop="handleCheckoutBranch(branch.fullName)"
+                      >
+                        <ArrowRightLeft :size="12" />
+                      </button>
+                    </div>
+
+                    <span v-if="activeBranchName === branch.fullName && !branch.isCurrent" class="tree-selected-dot" />
+                    <span v-if="branch.isCurrent" class="tree-current-dot" />
+                  </div>
+                </div>
+
                 <!-- Subfolders (e.g. dev, feature) -->
                 <SidebarTreeNode 
                   v-for="sub in sidebarDisplayTree.subfolders" 
@@ -518,12 +691,15 @@ onMounted(() => {
                   :selected-branches="selectedBranchNames"
                   :quick-target-branch="quickTargetBranch"
                   :current-branch="repoItem.currentBranch"
+                  :pinned-branch-names="pinnedBranchNames"
                   @select-folder="handleSelectSidebarFolder"
                   @select-branch="handleSelectSidebarBranch"
                   @toggle-branch-select="handleToggleBranchSelect"
                   @quick-merge="handleQuickMerge"
+                  @checkout-branch="handleCheckoutBranch"
                   @checkout-target-branch="handleCheckoutTargetBranch"
                   @create-branch-in-folder="handleOpenCreateBranchInFolder"
+                  @toggle-pin-branch="togglePinBranch"
                 />
 
                 <!-- Root branches without '/' (e.g. main, master) -->
@@ -534,7 +710,8 @@ onMounted(() => {
                   :class="{ 
                     'is-current': branch.isCurrent, 
                     'is-active-selected': activeBranchName === branch.fullName,
-                    'is-merge-selected': selectedBranchNames.includes(branch.fullName)
+                    'is-merge-selected': selectedBranchNames.includes(branch.fullName),
+                    'is-pinned-branch': pinnedBranchNames.includes(branch.fullName)
                   }"
                   :style="{ paddingLeft: isSelectMode ? '24px' : '32px' }"
                   :title="branch.fullName"
@@ -556,8 +733,26 @@ onMounted(() => {
                     {{ branch.leafName }}
                   </span>
 
+                  <!-- Pinned indicator next to branch name -->
+                  <Pin 
+                    v-if="pinnedBranchNames.includes(branch.fullName)" 
+                    :size="10" 
+                    class="sidebar-pinned-tag-icon"
+                    title="已置顶（始终在根目录最顶上）"
+                  />
+
                   <!-- Action Buttons on hover (和快速合并同级) -->
                   <div v-if="!isSelectMode" class="sidebar-branch-actions">
+                    <!-- Pin Button (分支置顶) -->
+                    <button 
+                      class="sidebar-action-btn sidebar-pin-btn"
+                      :class="{ 'is-pinned': pinnedBranchNames.includes(branch.fullName) }"
+                      :title="pinnedBranchNames.includes(branch.fullName) ? '取消置顶' : '置顶此分支（始终在根目录最顶上）'"
+                      @click.stop="togglePinBranch(branch.fullName)"
+                    >
+                      <Pin :size="11" />
+                    </button>
+
                     <!-- Quick Merge Button on hover -->
                     <button 
                       v-if="quickTargetBranch && branch.fullName !== quickTargetBranch"
@@ -568,12 +763,12 @@ onMounted(() => {
                       <GitMerge :size="12" />
                     </button>
 
-                    <!-- Switch to Target Branch Button on hover -->
+                    <!-- Switch to this branch Button on hover -->
                     <button 
-                      v-if="quickTargetBranch && repoItem.currentBranch !== quickTargetBranch"
+                      v-if="!branch.isCurrent"
                       class="sidebar-action-btn sidebar-switch-target-btn"
-                      :title="`切换到目标分支 (${quickTargetBranch})`"
-                      @click.stop="handleCheckoutTargetBranch"
+                      :title="`切换至此分支 (${branch.leafName})`"
+                      @click.stop="handleCheckoutBranch(branch.fullName)"
                     >
                       <ArrowRightLeft :size="12" />
                     </button>
@@ -612,6 +807,7 @@ onMounted(() => {
           :is-select-mode="isSelectMode"
           :selected-branches="selectedBranchNames"
           :quick-target-branch="quickTargetBranch"
+          :pinned-branch-names="pinnedBranchNames"
           @update:current-folder-path="(p) => currentFolderPath = p"
           @update:active-branch-name="(b) => activeBranchName = b"
           @update:is-select-mode="(val) => isSelectMode = val"
@@ -619,6 +815,7 @@ onMounted(() => {
           @update:quick-target-branch="handleUpdateQuickTargetBranch"
           @quick-merge="handleQuickMerge"
           @select-branch="handleSelectSidebarBranch"
+          @toggle-pin="(b) => togglePinBranch(b.fullName)"
           @toast="addToast"
           @repo-updated="handleRepoUpdated"
           @open-create-branch="handleOpenCreateBranchInFolder"
@@ -1050,5 +1247,75 @@ onMounted(() => {
 .sidebar-resizer:hover .resizer-line {
   background: #818cf8;
   box-shadow: 0 0 8px rgba(129, 140, 248, 0.6);
+}
+
+/* Sidebar Pinned Section (置顶分支专属区域) */
+.sidebar-pinned-section {
+  margin: 4px 8px 10px 10px;
+  background: rgba(245, 158, 11, 0.05);
+  border: 1px dashed rgba(245, 158, 11, 0.25);
+  border-radius: 8px;
+  padding: 6px 4px;
+}
+
+.sidebar-pinned-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 6px 6px 6px;
+  border-bottom: 1px solid rgba(245, 158, 11, 0.12);
+  margin-bottom: 4px;
+}
+
+.sidebar-pinned-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #fbbf24;
+}
+
+.sidebar-pinned-sort-toggle {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fbbf24;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.sidebar-pinned-sort-toggle:hover {
+  background: #f59e0b;
+  color: #0f172a;
+}
+
+.is-pinned-branch-node {
+  background: rgba(245, 158, 11, 0.04);
+}
+
+.is-pinned-branch-node:hover {
+  background: rgba(245, 158, 11, 0.12) !important;
+}
+
+.sidebar-pinned-tag-icon {
+  color: #f59e0b;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.sidebar-pin-btn.is-pinned {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(245, 158, 11, 0.5);
+  color: #fbbf24;
+}
+
+.sidebar-pin-btn:hover {
+  background: #f59e0b;
+  border-color: #fbbf24;
+  color: #ffffff;
 }
 </style>

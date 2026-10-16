@@ -16,7 +16,9 @@ import {
   FolderGit2,
   GitMerge,
   Download,
-  Edit3
+  Edit3,
+  Pin,
+  CloudOff
 } from 'lucide-vue-next'
 import type { BranchItem } from '../utils/branchTree'
 import { fetchBranchCommits, type BranchCommitItem } from '../api'
@@ -32,6 +34,7 @@ const props = defineProps<{
   isSelectMode?: boolean
   isMergeSelected?: boolean
   quickTargetBranch?: string
+  isPinned?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -40,10 +43,12 @@ const emit = defineEmits<{
   (e: 'push', branch: BranchItem): void
   (e: 'rename', branch: BranchItem): void
   (e: 'delete', branch: BranchItem): void
+  (e: 'deleteRemote', branch: BranchItem): void
   (e: 'locate', branch: BranchItem): void
   (e: 'toggleExpand', branch: BranchItem): void
   (e: 'toggleMergeSelect', branch: BranchItem): void
   (e: 'quickMerge', branch: BranchItem): void
+  (e: 'togglePin', branch: BranchItem): void
   (e: 'toast', msg: string, type: 'success' | 'error' | 'info'): void
 }>()
 
@@ -181,6 +186,10 @@ onMounted(() => {
               <span class="pulse-dot-indigo" />
               <span>已定位</span>
             </span>
+            <span v-if="isPinned" class="pinned-badge" title="已置顶分支（始终在根目录最顶上）">
+              <Pin :size="11" />
+              <span>已置顶</span>
+            </span>
           </div>
 
           <div class="branch-sub-row">
@@ -206,6 +215,18 @@ onMounted(() => {
 
       <!-- Actions: Locate (in search mode), Switch, Push, Delete -->
       <div class="branch-actions" @click.stop>
+        <!-- Pin button (分支置顶) -->
+        <button 
+          class="btn btn-outline btn-sm pin-btn" 
+          :class="{ 'is-pinned': isPinned }"
+          :disabled="!!loadingAction"
+          :title="isPinned ? '取消置顶此分支' : '置顶此分支（始终显示在根目录最顶上）'"
+          @click="emit('togglePin', branch)"
+        >
+          <Pin :size="13" :style="{ color: isPinned ? '#f59e0b' : 'inherit' }" />
+          <span>{{ isPinned ? '已置顶' : '置顶' }}</span>
+        </button>
+
         <!-- Locate in Folder button (when in search mode) -->
         <button 
           v-if="isSearchMode" 
@@ -282,7 +303,19 @@ onMounted(() => {
           <span>重命名</span>
         </button>
 
-        <!-- Delete button -->
+        <!-- Delete Remote Branch button (删除远程分支) -->
+        <button 
+          class="btn btn-danger-outline btn-sm delete-remote-btn"
+          :disabled="!!loadingAction"
+          :title="`删除远程分支 (git push ${branch.upstream ? branch.upstream.split('/')[0] : 'origin'} --delete)`"
+          @click="emit('deleteRemote', branch)"
+        >
+          <RefreshCw v-if="loadingAction === `delete-remote-${branch.fullName}`" :size="13" class="spin-anim" />
+          <CloudOff v-else :size="13" />
+          <span>删远程</span>
+        </button>
+
+        <!-- Delete Local Branch button (删除本地分支) -->
         <button 
           v-if="!branch.isCurrent" 
           class="btn btn-danger-outline btn-sm"
@@ -291,6 +324,7 @@ onMounted(() => {
           @click="emit('delete', branch)"
         >
           <Trash2 :size="13" />
+          <span>删本地</span>
         </button>
       </div>
     </div>
@@ -806,5 +840,41 @@ onMounted(() => {
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+.pinned-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fbbf24;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.pin-btn.is-pinned {
+  border-color: rgba(245, 158, 11, 0.5);
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+}
+
+.pin-btn:hover {
+  border-color: #f59e0b;
+  color: #fbbf24;
+}
+
+.delete-remote-btn {
+  border-color: rgba(244, 63, 94, 0.35);
+  color: #fb7185;
+}
+
+.delete-remote-btn:hover {
+  background: rgba(244, 63, 94, 0.15);
+  border-color: #f43f5e;
+  color: #fda4af;
 }
 </style>

@@ -21,6 +21,7 @@ import {
   commitMergeApi,
   type MergeBranchResult
 } from '../api'
+import SearchableSelect from './SearchableSelect.vue'
 
 const props = defineProps<{
   isOpen: boolean
@@ -69,6 +70,17 @@ let pollTimer: any = null
 // Target Branch candidates (all local branches)
 const availableTargetBranches = computed(() => {
   return (props.repo.branches || []).map((b) => b.name)
+})
+
+// Target branch options for SearchableSelect
+const targetSelectOptions = computed(() => {
+  return availableTargetBranches.value.map((b) => ({
+    value: b,
+    label: b,
+    badge: b === props.repo.currentBranch ? '当前分支' : undefined,
+    hint: props.selectedBranches.includes(b) ? '已在待合并队列中' : undefined,
+    disabled: props.selectedBranches.includes(b)
+  }))
 })
 
 // Storage key to remember selected target branch per repository
@@ -395,16 +407,12 @@ const summaryStats = computed(() => {
             <span class="label-tip">所有选中的分支将依次合并入此分支</span>
           </label>
           <div class="select-wrapper">
-            <select v-model="targetBranch" class="form-select">
-              <option 
-                v-for="b in availableTargetBranches" 
-                :key="b" 
-                :value="b"
-                :disabled="selectedBranches.includes(b)"
-              >
-                {{ b }} {{ b === repo.currentBranch ? ' (当前分支)' : '' }} {{ selectedBranches.includes(b) ? ' (已在待合并队列中)' : '' }}
-              </option>
-            </select>
+            <SearchableSelect
+              v-model="targetBranch"
+              :options="targetSelectOptions"
+              placeholder="选择合并到的目标分支..."
+              search-placeholder="搜索目标分支..."
+            />
           </div>
         </div>
 

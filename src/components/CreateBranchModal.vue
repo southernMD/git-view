@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { Plus, AlertCircle, RefreshCw, UploadCloud, ArrowRightLeft, Folder } from 'lucide-vue-next'
 import type { RepoDetails } from '../api'
 import { createBranch, pushBranch } from '../api'
+import SearchableSelect from './SearchableSelect.vue'
 
 const props = defineProps<{
   isOpen: boolean
@@ -23,6 +24,15 @@ const pushToRemote = ref(true) // 默认勾选
 const isSubmitting = ref(false)
 const errorMessage = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
+
+// Base branch options for SearchableSelect
+const baseBranchOptions = computed(() => {
+  return (props.repo?.branches || []).map((b) => ({
+    value: b.name,
+    label: b.name,
+    badge: b.name === 'master' ? '默认' : (b.name === props.repo?.currentBranch ? '当前分支' : undefined)
+  }))
+})
 
 watch(() => props.isOpen, (open) => {
   if (open) {
@@ -172,17 +182,12 @@ async function handleSubmit() {
             <span>基准分支 (Base Branch)</span>
             <span class="required-star">*</span>
           </label>
-          <select v-model="baseBranchName" class="form-select">
-            <option 
-              v-for="b in repo?.branches || []" 
-              :key="b.name" 
-              :value="b.name"
-            >
-              {{ b.name }}
-              <template v-if="b.name === 'master'">(默认)</template>
-              <template v-else-if="b.name === repo?.currentBranch">(当前分支)</template>
-            </option>
-          </select>
+          <SearchableSelect
+            v-model="baseBranchName"
+            :options="baseBranchOptions"
+            placeholder="选择基准分支..."
+            search-placeholder="搜索基准分支..."
+          />
           <div class="form-hint">
             新分支将基于此分支的最新 Commit 创建，默认优先匹配 master 分支。
           </div>

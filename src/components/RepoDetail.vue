@@ -21,6 +21,7 @@ import {
   deleteBranch,
   fetchRepoDetails
 } from '../api'
+import SearchableSelect from './SearchableSelect.vue'
 
 const props = defineProps<{
   repo: RepoDetails
@@ -51,6 +52,32 @@ const checkoutAfterCreate = ref(true)
 const pushRemote = ref('origin')
 const pushSetUpstream = ref(true)
 const pushForce = ref(false)
+
+const baseBranchOptions = computed(() => {
+  return (props.repo.branches || []).map((b) => ({
+    value: b.name,
+    label: b.name,
+    badge: b.isCurrent ? '当前分支' : undefined
+  }))
+})
+
+const targetPushBranchOptions = computed(() => {
+  return (props.repo.branches || []).map((b) => ({
+    value: b.name,
+    label: b.name,
+    badge: b.isCurrent ? '当前 HEAD' : undefined
+  }))
+})
+
+const pushRemoteOptions = computed(() => {
+  if (!props.repo.remotes || props.repo.remotes.length === 0) {
+    return [{ value: 'origin', label: 'origin' }]
+  }
+  return props.repo.remotes.map((r) => ({
+    value: r.name,
+    label: `${r.name} (${r.url})`
+  }))
+})
 const pushLog = ref('')
 
 // Computed filtered branches
@@ -492,11 +519,12 @@ async function handleDeleteBranch(branchName: string) {
 
           <div class="form-group">
             <label class="form-label">基于基准分支 (Base Branch)</label>
-            <select v-model="baseBranchName" class="form-select">
-              <option v-for="b in repo.branches" :key="b.name" :value="b.name">
-                {{ b.name }} {{ b.isCurrent ? '(当前分支)' : '' }}
-              </option>
-            </select>
+            <SearchableSelect
+              v-model="baseBranchName"
+              :options="baseBranchOptions"
+              placeholder="选择基准分支..."
+              search-placeholder="搜索基准分支..."
+            />
           </div>
 
           <label class="form-checkbox">
@@ -533,21 +561,22 @@ async function handleDeleteBranch(branchName: string) {
         <div class="modal-body">
           <div class="form-group">
             <label class="form-label">目标分支 (Branch)</label>
-            <select v-model="targetPushBranch" class="form-select">
-              <option v-for="b in repo.branches" :key="b.name" :value="b.name">
-                {{ b.name }} {{ b.isCurrent ? '(当前 HEAD)' : '' }}
-              </option>
-            </select>
+            <SearchableSelect
+              v-model="targetPushBranch"
+              :options="targetPushBranchOptions"
+              placeholder="选择目标分支..."
+              search-placeholder="搜索目标分支..."
+            />
           </div>
 
           <div class="form-group">
             <label class="form-label">远程主机 (Remote)</label>
-            <select v-model="pushRemote" class="form-select">
-              <option v-for="r in repo.remotes" :key="r.name" :value="r.name">
-                {{ r.name }} ({{ r.url }})
-              </option>
-              <option v-if="repo.remotes.length === 0" value="origin">origin</option>
-            </select>
+            <SearchableSelect
+              v-model="pushRemote"
+              :options="pushRemoteOptions"
+              placeholder="选择远程主机..."
+              search-placeholder="搜索远程主机..."
+            />
           </div>
 
           <div style="display: flex; flex-direction: column; gap: 8px;">

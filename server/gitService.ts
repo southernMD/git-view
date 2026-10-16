@@ -612,10 +612,11 @@ export interface PullRemoteBranchParams {
   remoteBranch: string
   localBranch?: string
   overwrite?: boolean
+  forceReset?: boolean
   checkoutImmediately?: boolean
 }
 
-// Pull remote branch to local with overwrite or rename support
+// Pull remote branch to local with safe git merge (preserving local commits), or force reset if explicitly requested
 export async function pullRemoteBranch(params: PullRemoteBranchParams): Promise<{
   success: boolean
   message: string
@@ -668,25 +669,74 @@ export async function pullRemoteBranch(params: PullRemoteBranchParams): Promise<
   let finalOutput = fetchOutput
 
   if (localExists) {
-    if (!params.overwrite) {
-      throw new Error(`本地已存在同名分支 '${targetLocalBranch}'，请选择直接覆盖或指定重命名名称。`)
-    }
-
-    // Overwrite existing local branch
     const { stdout: curBranchOut } = await runGit('git branch --show-current', normPath)
-    const isCurrent = curBranchOut.trim() === targetLocalBranch
+    const currentBranch = curBranchOut.trim()
+    const isCurrent = currentBranch === targetLocalBranch
 
-    if (isCurrent) {
-      const resetRes = await runGit(`git reset --hard "${remote}/${cleanRemoteBranch}"`, normPath)
-      await runGit(`git branch -u "${remote}/${cleanRemoteBranch}" "${targetLocalBranch}"`, normPath)
-      finalOutput += '\n' + (resetRes.stdout || resetRes.stderr || '')
+    if (params.forceReset) {
+      // Explicit hard reset requested
+      if (isCurrent) {
+        const resetRes = await runGit(`git reset --hard "${remote}/${cleanRemoteBranch}"`, normPath)
+        try {
+          await runGit(`git branch -u "${remote}/${cleanRemoteBranch}" "${targetLocalBranch}"`, normPath)
+        } catch {}
+        finalOutput += '\n' + (resetRes.stdout || resetRes.stderr || '')
+      } else {
+        const branchRes = await runGit(`git branch -f "${targetLocalBranch}" "${remote}/${cleanRemoteBranch}"`, normPath)
+        try {
+          await runGit(`git branch -u "${remote}/${cleanRemoteBranch}" "${targetLocalBranch}"`, normPath)
+        } catch {}
+        finalOutput += '\n' + (branchRes.stdout || branchRes.stderr || '')
+        if (params.checkoutImmediately) {
+          const checkoutRes = await runGit(`git checkout "${targetLocalBranch}"`, normPath)
+          finalOutput += '\n' + (checkoutRes.stdout || checkoutRes.stderr || '')
+        }
+      }
     } else {
-      const branchRes = await runGit(`git branch -f "${targetLocalBranch}" "${remote}/${cleanRemoteBranch}"`, normPath)
-      await runGit(`git branch -u "${remote}/${cleanRemoteBranch}" "${targetLocalBranch}"`, normPath)
-      finalOutput += '\n' + (branchRes.stdout || branchRes.stderr || '')
-      if (params.checkoutImmediately !== false) {
-        const checkoutRes = await runGit(`git checkout "${targetLocalBranch}"`, normPath)
-        finalOutput += '\n' + (checkoutRes.stdout || checkoutRes.stderr || '')
+      // Safe pull: merge remote changes, preserving local commits
+      if (isCurrent) {
+        const mergeRes = await runGit(`git merge "${remote}/${cleanRemoteBranch}" --no-edit`, normPath)
+        try {
+          await runGit(`git branch -u "${remote}/${cleanRemoteBranch}" "${targetLocalBranch}"`, normPath)
+        } catch {}
+        finalOutput += '\n' + (mergeRes.stdout || mergeRes.stderr || '')
+      } else {
+        // Check if fast-forward is possible without checkout
+        let canFf = false
+        try {
+          await runGit(`git merge-base --is-ancestor "${targetLocalBranch}" "refs/remotes/${remote}/${cleanRemoteBranch}"`, normPath)
+          canFf = true
+        } catch {
+          canFf = false
+        }
+
+        if (canFf) {
+          const branchRes = await runGit(`git branch -f "${targetLocalBranch}" "${remote}/${cleanRemoteBranch}"`, normPath)
+          try {
+            await runGit(`git branch -u "${remote}/${cleanRemoteBranch}" "${targetLocalBranch}"`, normPath)
+          } catch {}
+          finalOutput += '\n' + (branchRes.stdout || branchRes.stderr || '')
+          if (params.checkoutImmediately) {
+            const checkoutRes = await runGit(`git checkout "${targetLocalBranch}"`, normPath)
+            finalOutput += '\n' + (checkoutRes.stdout || checkoutRes.stderr || '')
+          }
+        } else {
+          // Branch has local commits, checkout temporarily to merge safely without losing local work
+          await runGit(`git checkout "${targetLocalBranch}"`, normPath)
+          try {
+            const mergeRes = await runGit(`git merge "${remote}/${cleanRemoteBranch}" --no-edit`, normPath)
+            try {
+              await runGit(`git branch -u "${remote}/${cleanRemoteBranch}" "${targetLocalBranch}"`, normPath)
+            } catch {}
+            finalOutput += '\n' + (mergeRes.stdout || mergeRes.stderr || '')
+          } finally {
+            if (!params.checkoutImmediately && currentBranch && currentBranch !== targetLocalBranch) {
+              try {
+                await runGit(`git checkout "${currentBranch}"`, normPath)
+              } catch {}
+            }
+          }
+        }
       }
     }
   } else {
@@ -741,6 +791,40 @@ export async function mergeSingleBranch(params: MergeBranchParams): Promise<Merg
     await runGit(`git checkout "${targetBranch}"`, normPath)
   }
 
+  // 2.1 Before merging into targetBranch, pull latest remote targetBranch if it has a remote
+  let remote = 'origin'
+  try {
+    const { stdout: remOut } = await runGit(`git config branch.${targetBranch}.remote`, normPath)
+    if (remOut.trim()) remote = remOut.trim()
+  } catch {}
+
+  let hasRemote = false
+  try {
+    const { stdout: upOut } = await runGit(`git rev-parse --abbrev-ref "${targetBranch}@{upstream}"`, normPath)
+    if (upOut.trim() && !upOut.includes('@{upstream}')) {
+      hasRemote = true
+      const slashIdx = upOut.trim().indexOf('/')
+      if (slashIdx !== -1) remote = upOut.trim().slice(0, slashIdx)
+    }
+  } catch {}
+
+  if (!hasRemote) {
+    try {
+      const { stdout: refOut } = await runGit(`git rev-parse --verify "refs/remotes/${remote}/${targetBranch}"`, normPath)
+      if (refOut.trim()) hasRemote = true
+    } catch {}
+  }
+
+  if (hasRemote) {
+    try {
+      // Pull remote target branch so local target branch is up-to-date before merge
+      await runGit(`git fetch "${remote}" "${targetBranch}"`, normPath)
+      await runGit(`git merge "${remote}/${targetBranch}" --no-edit`, normPath)
+    } catch (pullErr: any) {
+      console.warn(`Pre-merge sync from ${remote}/${targetBranch} note:`, pullErr.message)
+    }
+  }
+
   // 3. Attempt git merge
   try {
     const { stdout, stderr } = await runGit(`git merge "${sourceBranch}" --no-edit`, normPath)
@@ -752,16 +836,22 @@ export async function mergeSingleBranch(params: MergeBranchParams): Promise<Merg
     // Auto push target branch to remote if requested and merge introduced new commits
     if (autoPushOnSuccess && !combined.includes('Already up to date') && !combined.includes('已经是最新')) {
       try {
-        let remote = 'origin'
-        try {
-          const { stdout: remOut } = await runGit(`git config branch.${targetBranch}.remote`, normPath)
-          if (remOut.trim()) remote = remOut.trim()
-        } catch {}
-
         await runGit(`git push -u "${remote}" "${targetBranch}"`, normPath)
         pushed = true
       } catch (pushErr: any) {
-        pushError = pushErr.message || '自动推送到远程失败'
+        const errMsg = pushErr.message || ''
+        // If rejected due to non-fast-forward, auto pull and retry push
+        if (errMsg.includes('fetch first') || errMsg.includes('Updates were rejected') || errMsg.includes('non-fast-forward')) {
+          try {
+            await runGit(`git pull --no-edit "${remote}" "${targetBranch}"`, normPath)
+            await runGit(`git push -u "${remote}" "${targetBranch}"`, normPath)
+            pushed = true
+          } catch (retryErr: any) {
+            pushError = retryErr.message || pushErr.message || '自动推送到远程失败'
+          }
+        } else {
+          pushError = pushErr.message || '自动推送到远程失败'
+        }
       }
     }
 
@@ -993,6 +1083,48 @@ export async function renameBranch(params: RenameBranchParams): Promise<RenameBr
     success: true,
     message: `分支已重命名为 "${newBranch}"${remoteMsg}`,
     renamedRemote
+  }
+}
+
+export interface DeleteRemoteBranchParams {
+  fullPath: string
+  branch: string
+  remote?: string
+}
+
+// Delete a branch from remote repository (git push <remote> --delete <branch>)
+export async function deleteRemoteBranch(params: DeleteRemoteBranchParams): Promise<{
+  success: boolean
+  message: string
+  output: string
+}> {
+  const normPath = normalizePath(params.fullPath)
+  let remote = (params.remote || 'origin').trim()
+  let branchName = (params.branch || '').trim()
+
+  if (!branchName) {
+    throw new Error('未指定要删除的远程分支名称')
+  }
+
+  // Strip remote prefix if present: "origin/foo" or "remotes/origin/foo"
+  if (branchName.startsWith(`remotes/${remote}/`)) {
+    branchName = branchName.slice(`remotes/${remote}/`.length)
+  } else if (branchName.startsWith(`${remote}/`)) {
+    branchName = branchName.slice(remote.length + 1)
+  }
+
+  // Execute git push <remote> --delete <branchName>
+  const result = await runGit(`git push "${remote}" --delete "${branchName}"`, normPath)
+
+  // Prune tracking references so local cache is immediately updated
+  try {
+    await runGit(`git fetch "${remote}" --prune`, normPath)
+  } catch {}
+
+  return {
+    success: true,
+    message: `已成功删除远程分支 "${remote}/${branchName}"`,
+    output: result.stdout || result.stderr
   }
 }
 

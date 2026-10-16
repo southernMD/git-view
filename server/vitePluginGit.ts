@@ -16,7 +16,8 @@ import {
   checkConflictStatus,
   abortMerge,
   commitMerge,
-  renameBranch
+  renameBranch,
+  deleteRemoteBranch
 } from './gitService.ts'
 
 // Helper to parse JSON body from incoming HTTP request
@@ -329,6 +330,17 @@ export async function handleGitApi(req: any, res: any): Promise<boolean> {
               message: `已删除本地分支 "${body.branch}"`,
               output: result.stdout || result.stderr
             })
+          }
+
+          // 11.5. POST /api/git/delete-remote-branch: Delete a remote branch
+          if (req.method === 'POST' && pathname === '/api/git/delete-remote-branch') {
+            const body = await parseJsonBody<{ fullPath: string; branch: string; remote?: string }>(req)
+            if (!body.fullPath || !body.branch) {
+              return sendJson(res, 400, { success: false, error: '缺少仓库路径或分支名' })
+            }
+
+            const result = await deleteRemoteBranch(body)
+            return sendJson(res, 200, result)
           }
 
           // 12. POST /api/git/merge-branch: Merge single branch into targetBranch with mode handling

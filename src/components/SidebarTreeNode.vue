@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Folder, ChevronRight, ChevronDown, GitBranch, GitMerge, ArrowRightLeft, Plus } from 'lucide-vue-next'
+import { Folder, ChevronRight, ChevronDown, GitBranch, GitMerge, ArrowRightLeft, Plus, Pin } from 'lucide-vue-next'
 import type { BranchFolderNode, BranchItem } from '../utils/branchTree'
 
 const props = defineProps<{
@@ -14,6 +14,7 @@ const props = defineProps<{
   selectedBranches?: string[]
   quickTargetBranch?: string
   currentBranch?: string
+  pinnedBranchNames?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -21,8 +22,10 @@ const emit = defineEmits<{
   (e: 'selectBranch', branch: BranchItem): void
   (e: 'toggleBranchSelect', branchFullName: string): void
   (e: 'quickMerge', branchFullName: string): void
+  (e: 'checkoutBranch', branchFullName: string): void
   (e: 'checkoutTargetBranch'): void
   (e: 'createBranchInFolder', folderPath: string): void
+  (e: 'togglePinBranch', branchFullName: string): void
 }>()
 
 const depthVal = props.depth || 0
@@ -159,12 +162,15 @@ function handleFolderSelect() {
         :selected-branches="selectedBranches"
         :quick-target-branch="quickTargetBranch"
         :current-branch="currentBranch"
+        :pinned-branch-names="pinnedBranchNames"
         @select-folder="(p) => emit('selectFolder', p)"
         @select-branch="(b) => emit('selectBranch', b)"
         @toggle-branch-select="(b) => emit('toggleBranchSelect', b)"
         @quick-merge="(b) => emit('quickMerge', b)"
+        @checkout-branch="(b) => emit('checkoutBranch', b)"
         @checkout-target-branch="() => emit('checkoutTargetBranch')"
         @create-branch-in-folder="(p) => emit('createBranchInFolder', p)"
+        @toggle-pin-branch="(b) => emit('togglePinBranch', b)"
       />
 
       <!-- Branches in this folder -->
@@ -175,7 +181,8 @@ function handleFolderSelect() {
         :class="{ 
           'is-current': branch.isCurrent,
           'is-active-selected': activeBranchName === branch.fullName,
-          'is-merge-selected': selectedBranches?.includes(branch.fullName)
+          'is-merge-selected': selectedBranches?.includes(branch.fullName),
+          'is-pinned-branch': pinnedBranchNames?.includes(branch.fullName)
         }"
         :style="{ paddingLeft: `${(depthVal + 1) * 16 + (isSelectMode ? 14 : 22)}px` }"
         :title="branch.fullName"
@@ -197,8 +204,26 @@ function handleFolderSelect() {
           {{ branch.leafName }}
         </span>
 
+        <!-- Pinned indicator next to branch name -->
+        <Pin 
+          v-if="pinnedBranchNames?.includes(branch.fullName)" 
+          :size="10" 
+          class="sidebar-pinned-tag-icon"
+          title="已置顶（始终在根目录最顶上）"
+        />
+
         <!-- Action Buttons on hover (和快速合并同级) -->
         <div v-if="!isSelectMode" class="sidebar-branch-actions">
+          <!-- Pin Button (分支置顶) -->
+          <button 
+            class="sidebar-action-btn sidebar-pin-btn"
+            :class="{ 'is-pinned': pinnedBranchNames?.includes(branch.fullName) }"
+            :title="pinnedBranchNames?.includes(branch.fullName) ? '取消置顶' : '置顶此分支（始终在根目录最顶上）'"
+            @click.stop="emit('togglePinBranch', branch.fullName)"
+          >
+            <Pin :size="11" />
+          </button>
+
           <!-- Quick Merge Button on hover -->
           <button 
             v-if="quickTargetBranch && branch.fullName !== quickTargetBranch"
@@ -209,12 +234,12 @@ function handleFolderSelect() {
             <GitMerge :size="12" />
           </button>
 
-          <!-- Switch to Target Branch Button on hover -->
+          <!-- Switch Branch Button on hover -->
           <button 
-            v-if="quickTargetBranch && currentBranch !== quickTargetBranch"
+            v-if="!branch.isCurrent"
             class="sidebar-action-btn sidebar-switch-target-btn"
-            :title="`切换到目标分支 (${quickTargetBranch})`"
-            @click.stop="emit('checkoutTargetBranch')"
+            :title="`切换至此分支 (${branch.leafName})`"
+            @click.stop="emit('checkoutBranch', branch.fullName)"
           >
             <ArrowRightLeft :size="12" />
           </button>
@@ -422,5 +447,23 @@ function handleFolderSelect() {
 .tree-children-container {
   display: flex;
   flex-direction: column;
+}
+
+.sidebar-pinned-tag-icon {
+  color: #f59e0b;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.sidebar-pin-btn.is-pinned {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(245, 158, 11, 0.5);
+  color: #fbbf24;
+}
+
+.sidebar-pin-btn:hover {
+  background: #f59e0b;
+  border-color: #fbbf24;
+  color: #ffffff;
 }
 </style>
