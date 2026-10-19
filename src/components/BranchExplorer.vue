@@ -704,6 +704,16 @@ async function handlePullBranch(branch: BranchItem) {
             <ArrowRightLeft :size="12" />
             <span>切至目标</span>
           </button>
+
+          <button
+            v-if="quickTargetBranch && repo.currentBranch !== quickTargetBranch"
+            class="header-target-merge-btn"
+            :title="`检出目标分支 (${quickTargetBranch}) 并将当前分支 (${repo.currentBranch}) 合并进去`"
+            @click="emit('quickMerge', repo.currentBranch)"
+          >
+            <GitMerge :size="12" />
+            <span>合并当前至目标</span>
+          </button>
         </div>
 
         <button class="btn btn-secondary btn-sm" :disabled="!!loadingAction" @click="handleFetch">
@@ -1771,6 +1781,28 @@ async function handlePullBranch(branch: BranchItem) {
 .header-target-switch-btn:hover {
   background: rgba(99, 102, 241, 0.4);
   border-color: #818cf8;
+  color: #ffffff;
+}
+
+.header-target-merge-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(16, 185, 129, 0.18);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  color: #a7f3d0;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.header-target-merge-btn:hover {
+  background: rgba(16, 185, 129, 0.35);
+  border-color: #34d399;
   color: #ffffff;
 }
 

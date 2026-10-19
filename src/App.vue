@@ -127,15 +127,23 @@ function initQuickTargetBranch(repo: RepoDetails | null) {
   } catch {}
 
   const allNames = (repo.branches || []).map((b) => b.name)
-  if (saved && allNames.includes(saved)) {
+  if (saved && allNames.includes(saved) && saved !== repo.currentBranch) {
     quickTargetBranch.value = saved
-  } else if (allNames.includes('main')) {
-    quickTargetBranch.value = 'main'
-  } else if (allNames.includes('master')) {
-    quickTargetBranch.value = 'master'
-  } else {
-    quickTargetBranch.value = repo.currentBranch || allNames[0] || 'main'
+    return
   }
+
+  // Priority search for common public target branch candidates (excluding current branch)
+  const candidates = ['test', 'dev', 'develop', 'release', 'main', 'master']
+  for (const cand of candidates) {
+    if (allNames.includes(cand) && cand !== repo.currentBranch) {
+      quickTargetBranch.value = cand
+      return
+    }
+  }
+
+  // Fallback: pick first branch that is NOT current branch
+  const other = allNames.find((b) => b !== repo.currentBranch)
+  quickTargetBranch.value = other || ''
 }
 
 watch(activeRepo, (repo) => {
@@ -194,11 +202,11 @@ async function handleQuickMerge(sourceBranch: string) {
     addToast(`无法将分支 "${sourceBranch}" 合并到自身！`, 'error')
     return
   }
-  if (!confirm(`确定要直接将分支 "${sourceBranch}" 快速合并到目标分支 "${target}" 吗？`)) {
+  if (!confirm(`确定要切换至目标分支 "${target}" 并合并分支 "${sourceBranch}" 吗？\n\n（操作将执行：checkout ${target} -> merge ${sourceBranch}，完成后停留在 ${target} 分支）`)) {
     return
   }
 
-  addToast(`正在将 "${sourceBranch}" 快速合并到 "${target}"...`, 'info')
+  addToast(`正在切换至 "${target}" 并合并分支 "${sourceBranch}"...`, 'info')
 
   try {
     const res = await mergeSingleBranchApi({
@@ -206,28 +214,22 @@ async function handleQuickMerge(sourceBranch: string) {
       targetBranch: target,
       sourceBranch,
       mode: 'detect',
-      restoreOriginalBranchOnSuccess: true,
-      autoPushOnSuccess: true
+      restoreOriginalBranchOnSuccess: false, // 切换到目标分支执行完后停留在目标分支
+      autoPushOnSuccess: false // 不自动推送到远程，留给开发者在VSCode/UI检查确认后推送
     })
 
     if (res.status === 'conflict_detected' || res.status === 'conflict_skipped' || (res.conflictFiles && res.conflictFiles.length > 0)) {
       const fileSummary = res.conflictFiles && res.conflictFiles.length > 0
         ? ` (${res.conflictFiles.length}个冲突文件: ${res.conflictFiles.slice(0, 3).join(', ')}${res.conflictFiles.length > 3 ? '等' : ''})`
         : ''
-      addToast(`快速合并失败：存在合并冲突！${fileSummary}，请在编辑器中解决或撤销`, 'error')
+      addToast(`快速合并存在冲突！${fileSummary}，当前工作区已定位至 "${target}"，请在编辑器中解决或撤销`, 'error')
       await loadData(true)
       return
     } else if (res.status === 'up_to_date') {
-      addToast(`分支 "${sourceBranch}" 已经是最新提交，无需重复合并`, 'info')
+      addToast(`已切换至 "${target}"，分支 "${sourceBranch}" 已经是最新提交，无需重复合并`, 'info')
       await loadData(true)
     } else {
-      if (res.pushed) {
-        addToast(`分支 "${sourceBranch}" 已成功合并至 "${target}" 并已自动推送到远程！`, 'success')
-      } else if (res.pushError) {
-        addToast(`已成功合并至 "${target}"，但自动推送到远程失败: ${res.pushError}`, 'error')
-      } else {
-        addToast(`分支 "${sourceBranch}" 已成功合并至 "${target}"！`, 'success')
-      }
+      addToast(`已成功切换至 "${target}" 并合并了分支 "${sourceBranch}"！`, 'success')
       await loadData(true)
     }
   } catch (err: any) {
@@ -655,7 +657,7 @@ onMounted(() => {
                       <button 
                         v-if="quickTargetBranch && branch.fullName !== quickTargetBranch"
                         class="sidebar-action-btn sidebar-quick-merge-btn"
-                        :title="`快速合并到 ${quickTargetBranch}`"
+                        :title="`检出 ${quickTargetBranch} 并合并此分支 (${branch.leafName})`"
                         @click.stop="handleQuickMerge(branch.fullName)"
                       >
                         <GitMerge :size="12" />
@@ -757,7 +759,7 @@ onMounted(() => {
                     <button 
                       v-if="quickTargetBranch && branch.fullName !== quickTargetBranch"
                       class="sidebar-action-btn sidebar-quick-merge-btn"
-                      :title="`快速合并到 ${quickTargetBranch}`"
+                      :title="`检出 ${quickTargetBranch} 并合并此分支 (${branch.leafName})`"
                       @click.stop="handleQuickMerge(branch.fullName)"
                     >
                       <GitMerge :size="12" />

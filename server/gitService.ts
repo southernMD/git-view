@@ -791,37 +791,40 @@ export async function mergeSingleBranch(params: MergeBranchParams): Promise<Merg
     await runGit(`git checkout "${targetBranch}"`, normPath)
   }
 
-  // 2.1 Before merging into targetBranch, pull latest remote targetBranch if it has a remote
+  // 2.1 Before merging into targetBranch, pull latest remote targetBranch only if explicitly requested or autoPush is enabled
   let remote = 'origin'
   try {
     const { stdout: remOut } = await runGit(`git config branch.${targetBranch}.remote`, normPath)
     if (remOut.trim()) remote = remOut.trim()
   } catch {}
 
-  let hasRemote = false
-  try {
-    const { stdout: upOut } = await runGit(`git rev-parse --abbrev-ref "${targetBranch}@{upstream}"`, normPath)
-    if (upOut.trim() && !upOut.includes('@{upstream}')) {
-      hasRemote = true
-      const slashIdx = upOut.trim().indexOf('/')
-      if (slashIdx !== -1) remote = upOut.trim().slice(0, slashIdx)
-    }
-  } catch {}
+  if (params.autoPushOnSuccess) {
 
-  if (!hasRemote) {
+    let hasRemote = false
     try {
-      const { stdout: refOut } = await runGit(`git rev-parse --verify "refs/remotes/${remote}/${targetBranch}"`, normPath)
-      if (refOut.trim()) hasRemote = true
+      const { stdout: upOut } = await runGit(`git rev-parse --abbrev-ref "${targetBranch}@{upstream}"`, normPath)
+      if (upOut.trim() && !upOut.includes('@{upstream}')) {
+        hasRemote = true
+        const slashIdx = upOut.trim().indexOf('/')
+        if (slashIdx !== -1) remote = upOut.trim().slice(0, slashIdx)
+      }
     } catch {}
-  }
 
-  if (hasRemote) {
-    try {
-      // Pull remote target branch so local target branch is up-to-date before merge
-      await runGit(`git fetch "${remote}" "${targetBranch}"`, normPath)
-      await runGit(`git merge "${remote}/${targetBranch}" --no-edit`, normPath)
-    } catch (pullErr: any) {
-      console.warn(`Pre-merge sync from ${remote}/${targetBranch} note:`, pullErr.message)
+    if (!hasRemote) {
+      try {
+        const { stdout: refOut } = await runGit(`git rev-parse --verify "refs/remotes/${remote}/${targetBranch}"`, normPath)
+        if (refOut.trim()) hasRemote = true
+      } catch {}
+    }
+
+    if (hasRemote) {
+      try {
+        // Pull remote target branch so local target branch is up-to-date before merge
+        await runGit(`git fetch "${remote}" "${targetBranch}"`, normPath)
+        await runGit(`git merge "${remote}/${targetBranch}" --no-edit`, normPath)
+      } catch (pullErr: any) {
+        console.warn(`Pre-merge sync from ${remote}/${targetBranch} note:`, pullErr.message)
+      }
     }
   }
 

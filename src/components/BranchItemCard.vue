@@ -261,11 +261,11 @@ onMounted(() => {
           v-if="!isSelectMode && quickTargetBranch && branch.fullName !== quickTargetBranch"
           class="btn btn-secondary btn-sm quick-merge-btn"
           :disabled="!!loadingAction"
-          :title="`直接将此分支快速合并到目标分支 ${quickTargetBranch}`"
+          :title="`检出 ${quickTargetBranch} 并将此分支 (${branch.leafName}) 合并进去`"
           @click="emit('quickMerge', branch)"
         >
           <GitMerge :size="13" style="color: #818cf8;" />
-          <span>快速合并</span>
+          <span>合并到 {{ quickTargetBranch.split('/').pop() }}</span>
         </button>
 
         <!-- Pull button (拉取远程到本地更新自己) -->

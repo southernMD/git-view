@@ -228,7 +228,7 @@ function handleFolderSelect() {
           <button 
             v-if="quickTargetBranch && branch.fullName !== quickTargetBranch"
             class="sidebar-action-btn sidebar-quick-merge-btn"
-            :title="`快速合并到 ${quickTargetBranch}`"
+            :title="`检出 ${quickTargetBranch} 并合并此分支 (${branch.leafName})`"
             @click.stop="emit('quickMerge', branch.fullName)"
           >
             <GitMerge :size="12" />
